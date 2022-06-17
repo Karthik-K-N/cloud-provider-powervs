@@ -148,3 +148,44 @@ func (p *powerVSTestClient) GetDHCPServers() (models.DHCPServers, error) {
 func (p *powerVSTestClient) GetDHCPServerByID(string) (*models.DHCPServerDetail, error) {
 	return nil, nil
 }
+
+func TestGetPowerEndpoint(t *testing.T) {
+	// with empty endpoint
+	envVarPublicEndPoint := ServiceEndpointMap{}
+	endpoint := getEndpoint(powerEndpointName, envVarPublicEndPoint)
+	assert.Equal(t, "", endpoint)
+
+	// without power endpoint
+	envVarPublicEndPoint = ServiceEndpointMap{
+		"1": &struct {
+			Service string
+			URL     string
+		}{Service: "vpc", URL: "https://custom.vpc.test.cloud.ibm.com"},
+	}
+	endpoint = getEndpoint(powerEndpointName, envVarPublicEndPoint)
+	assert.Equal(t, "", endpoint)
+
+	// with power endpoint
+	envVarPublicEndPoint = ServiceEndpointMap{
+		"1": &struct {
+			Service string
+			URL     string
+		}{Service: "pe", URL: "https://dal.test.power-iaas.cloud.ibm.com"},
+	}
+	endpoint = getEndpoint(powerEndpointName, envVarPublicEndPoint)
+	assert.Equal(t, "https://dal.test.power-iaas.cloud.ibm.com", endpoint)
+
+	// with iam endpoint
+	envVarPublicEndPoint = ServiceEndpointMap{
+		"1": &struct {
+			Service string
+			URL     string
+		}{Service: "pe", URL: "https://dal.test.power-iaas.cloud.ibm.com"},
+		"2": &struct {
+			Service string
+			URL     string
+		}{Service: "iam", URL: "https://iam.test.cloud.ibm.com"},
+	}
+	endpoint = getEndpoint(iamEndpointName, envVarPublicEndPoint)
+	assert.Equal(t, "https://iam.test.cloud.ibm.com", endpoint)
+}
