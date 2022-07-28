@@ -112,6 +112,15 @@ type Provider struct {
 	PowerVSRegion string `gcfg:"powerVSRegion"`
 	// PowerVSZone is IBM Power VS service zone
 	PowerVSZone string `gcfg:"powerVSZone"`
+
+	// NOTE: The below fields are added with the intention to test in Staging Cloud
+
+	// PowerVSStagingTesting is used to identify testing in staging workflow
+	PowerVSStagingTesting bool `gcfg:"powerVSStagingTesting"`
+	// PowerVSProdApiKey is IBM cloud production API Key
+	PowerVSProductionApiKey string `gcfg:"powerVSProductionApiKey"`
+	// VPCAccountID is IBM cloud account ID where we need to create loadbalaner
+	VPCAccountID string `gcfg:"vpcAccountID"`
 }
 
 type ServiceEndpointMap map[string]*struct {

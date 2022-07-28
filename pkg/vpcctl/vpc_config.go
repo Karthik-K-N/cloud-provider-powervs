@@ -61,6 +61,8 @@ const (
 	iamEndpointName = "iam"
 	// key name used to identify vpc service url from service override map
 	vpcEndpointName = "vpc"
+	// key name used to identify iam service url from service override map
+	iamProductionEndpointName = "iamprod"
 )
 
 var memberNodeLabelsAllowed = [...]string{
@@ -104,6 +106,7 @@ type ConfigVpc struct {
 		Service string
 		URL     string
 	}
+	PowerVSStagingTesting bool
 	// Internal config settings
 	endpointURL      string
 	resourceGroupID  string
@@ -112,7 +115,11 @@ type ConfigVpc struct {
 
 // getIamEndpoint - retrieve the correct IAM endpoint for the current config
 func (c *ConfigVpc) getIamEndpoint() string {
-	if exist, iamEndpoint := c.getServiceOverrideEndpoint(iamEndpointName); exist {
+	iamEndPointKey := iamEndpointName
+	if c.PowerVSStagingTesting {
+		iamEndPointKey = iamProductionEndpointName
+	}
+	if exist, iamEndpoint := c.getServiceOverrideEndpoint(iamEndPointKey); exist {
 		return iamEndpoint
 	}
 	if strings.Contains(c.Region, "stage") {

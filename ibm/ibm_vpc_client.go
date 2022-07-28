@@ -38,12 +38,20 @@ type vpcClient struct {
 
 // newVpcSdkClient initializes a new sdk client and can be overridden by testing
 var newVpcSdkClient = func(provider Provider) (*vpcv1.VpcV1, error) {
-	// read VPC credentials from mounted secret
-	credential, err := readCredential(provider)
-	if err != nil {
-		return nil, err
+	var credential string
+	var err error
+	if provider.PowerVSStagingTesting {
+		credential, err = readCredentialsForVPC(provider)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// read VPC credentials from mounted secret
+		credential, err = readCredential(provider)
+		if err != nil {
+			return nil, err
+		}
 	}
-
 	// authenticator needs api key
 	authenticator := &core.IamAuthenticator{
 		ApiKey: credential, // pragma: allowlist secret
@@ -101,6 +109,13 @@ func readCredential(provider Provider) (string, error) {
 	credential := string(data)
 	credential = strings.TrimSpace(credential)
 	return credential, nil
+}
+
+func readCredentialsForVPC(provider Provider) (string, error) {
+	if provider.PowerVSProductionApiKey == "" {
+		return "", errors.New("PowerVSProductionApiKey is empty")
+	}
+	return strings.TrimSpace(provider.PowerVSProductionApiKey), nil
 }
 
 func (vpc *vpcClient) populateNodeMetadata(nodeName string, node *NodeMetadata) error {

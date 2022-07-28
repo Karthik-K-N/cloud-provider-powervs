@@ -78,27 +78,45 @@ func (c *Cloud) NewConfigVpc(enablePrivateEndpoint bool) (*vpcctl.ConfigVpc, err
 	if c.Config == nil {
 		return nil, fmt.Errorf("Cloud config not initialized")
 	}
+	accountID := c.Config.Prov.AccountID
+	if c.Config.Prov.PowerVSStagingTesting {
+		if vpcAccountID := strings.TrimSpace(c.Config.Prov.VPCAccountID); vpcAccountID == "" {
+			return nil, fmt.Errorf("Using testing in Power VS staging cloud but Procustion VPC account ID not provided ")
+		} else {
+			accountID = vpcAccountID
+		}
+	}
 	// Initialize config based on values in the cloud provider
 	config := &vpcctl.ConfigVpc{
-		AccountID:         c.Config.Prov.AccountID,
-		ClusterID:         c.Config.Prov.ClusterID,
-		EnablePrivate:     enablePrivateEndpoint,
-		ProviderType:      c.Config.Prov.ProviderType,
-		Region:            c.Config.Prov.Region,
-		ResourceGroupName: c.Config.Prov.G2ResourceGroupName,
-		SubnetNames:       c.Config.Prov.G2VpcSubnetNames,
-		WorkerAccountID:   c.Config.Prov.G2WorkerServiceAccountID,
-		VpcName:           c.Config.Prov.G2VpcName,
-		ServiceOverride:   c.Config.ServiceOverride,
+		AccountID:             accountID,
+		ClusterID:             c.Config.Prov.ClusterID,
+		EnablePrivate:         enablePrivateEndpoint,
+		ProviderType:          c.Config.Prov.ProviderType,
+		Region:                c.Config.Prov.Region,
+		ResourceGroupName:     c.Config.Prov.G2ResourceGroupName,
+		SubnetNames:           c.Config.Prov.G2VpcSubnetNames,
+		WorkerAccountID:       c.Config.Prov.G2WorkerServiceAccountID,
+		VpcName:               c.Config.Prov.G2VpcName,
+		ServiceOverride:       c.Config.ServiceOverride,
+		PowerVSStagingTesting: c.Config.Prov.PowerVSStagingTesting,
 	}
-	// If the G2Credentials is set, then look up the API key
-	if c.Config.Prov.G2Credentials != "" {
-		apiKey, err := os.ReadFile(c.Config.Prov.G2Credentials)
+	if c.Config.Prov.PowerVSStagingTesting {
+		credential, err := readCredentialsForVPC(c.Config.Prov)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to read credentials from %s: %v", c.Config.Prov.G2Credentials, err)
+			return nil, err
 		}
-		config.APIKeySecret = strings.TrimSpace(string(apiKey))
+		config.APIKeySecret = credential
+	} else {
+		// If the G2Credentials is set, then look up the API key
+		if c.Config.Prov.G2Credentials != "" {
+			apiKey, err := os.ReadFile(c.Config.Prov.G2Credentials)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to read credentials from %s: %v", c.Config.Prov.G2Credentials, err)
+			}
+			config.APIKeySecret = strings.TrimSpace(string(apiKey))
+		}
 	}
+
 	return config, nil
 }
 
