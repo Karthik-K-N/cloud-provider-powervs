@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/IBM-Cloud/power-go-client/clients/instance"
@@ -31,6 +32,7 @@ import (
 	"github.com/IBM-Cloud/power-go-client/power/models"
 	"github.com/IBM/go-sdk-core/v5/core"
 	rc "github.com/IBM/platform-services-go-sdk/resourcecontrollerv2"
+	"github.com/ppc64le-cloud/powervs-utils/multiworkspace"
 
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -80,8 +82,8 @@ type powerVSClient struct {
 
 // newPowerVSSdkClient initializes a new sdk client and can be overridden by testing
 var newPowerVSSdkClient = func(provider *Provider) (Client, error) {
-	if provider.PowerVSCloudInstanceName == "" && provider.PowerVSCloudInstanceID == "" {
-		return nil, fmt.Errorf("both service instance id and name cannot be empty")
+	if provider.PowerVSCloudInstanceName == "" && provider.PowerVSCloudInstanceID == "" && len(provider.PowerVSWorkspaces) == 0 {
+		return nil, fmt.Errorf("none of service instance id, name or workspace is set")
 	}
 	credential, err := readCredential(*provider)
 	if err != nil {
@@ -387,6 +389,147 @@ func getPowerVSNetwork(instance *models.PVMInstance) (*models.PVMInstanceNetwork
 	return instance.Networks[0], nil
 }
 
+type ibmPowerVSMultiWorkspaceClient struct {
+	provider Provider
+	sdk      multiworkspace.MultiWorkspace
+}
+
+// isProviderPowerVSWithMultiWorkspace returns true when multiple PowerVS workspaces are set in Provider
+func isProviderPowerVSWithMultiWorkspace(provider Provider) bool {
+	if len(provider.PowerVSWorkspaces) > 0 {
+		return true
+	}
+	return false
+}
+
+// newPowerVSMultiWorkspaceClient initializes a new PowerVS multi-workspace client.
+func newPowerVSMultiWorkspaceClient(provider *Provider) (*ibmPowerVSMultiWorkspaceClient, error) {
+	if len(provider.PowerVSWorkspaces) == 0 {
+		return nil, fmt.Errorf("PowerVS workspaces are not set")
+	}
+
+	credential, err := readCredential(*provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read credentials: %w", err)
+	}
+
+	// Create the authenticator
+	authenticator := &core.IamAuthenticator{
+		ApiKey: credential,
+	}
+
+	var workspaces []multiworkspace.Workspace
+	for _, workspace := range provider.PowerVSWorkspaces {
+		workspaces = append(workspaces, multiworkspace.Workspace{
+			Name: workspace.Name,
+			ID:   workspace.Id,
+			Zone: workspace.Zone,
+		})
+	}
+
+	options := multiworkspace.Options{
+		Workspaces:    workspaces,
+		Authenticator: authenticator,
+	}
+
+	multiWorkspaceClient, err := multiworkspace.New(options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create multiworkspace client: %w", err)
+	}
+
+	return &ibmPowerVSMultiWorkspaceClient{
+		provider: *provider,
+		sdk:      multiWorkspaceClient,
+	}, nil
+}
+
+// populateNodeMetadata forms the node metadata from instance details
+func (p *ibmPowerVSMultiWorkspaceClient) populateNodeMetadata(nodeName string, node *NodeMetadata) error {
+
+	// Try to fetch the nodeMetadata from the cache
+	obj, exists, err := dhcpCacheStore.GetByKey(nodeName)
+	if err != nil {
+		klog.Errorf("Node %s failed to fetch the node metadata from cache, error: %v", nodeName, err)
+	}
+	if exists {
+		klog.Infof("Node %s found metadata %+v from DHCP cache", nodeName, obj.(nodeMetadataCache).Metadata)
+		node = obj.(nodeMetadataCache).Metadata
+		return nil
+	}
+
+	// Fetch instance from PowerVS.
+	instanceDetails, err := p.sdk.GetInstanceDetails(nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get instance details for node %s: %w", nodeName, err)
+	}
+
+	pvsInstance := instanceDetails.Instance
+
+	// Check if the instance is not nil.
+	if pvsInstance == nil || pvsInstance.PvmInstanceID == nil || *pvsInstance.PvmInstanceID == "" {
+		return fmt.Errorf("could not retrieve a PowerVS instance for node %s", nodeName)
+	}
+
+	node.WorkerID = *pvsInstance.PvmInstanceID
+	klog.Infof("Node %s worker id is %s", nodeName, node.WorkerID)
+
+	node.PowerVSWorkspaceID = instanceDetails.Workspace.ID
+	klog.Infof("Node %s workspace id is %s", nodeName, node.PowerVSWorkspaceID)
+
+	node.InstanceType = pvsInstance.SysType
+	klog.Infof("Node %s instance type is %s", nodeName, node.InstanceType)
+
+	node.Region = ConstructRegionFromZone(instanceDetails.Workspace.Zone)
+	klog.Infof("Node %s region is %s", nodeName, node.Region)
+
+	node.FailureDomain = instanceDetails.Workspace.Zone
+	klog.Infof("Node %s failureDomain is %s", nodeName, node.FailureDomain)
+
+	for _, network := range pvsInstance.Networks {
+		if strings.TrimSpace(network.ExternalIP) != "" {
+			node.ExternalIP = strings.TrimSpace(network.ExternalIP)
+		}
+		if strings.TrimSpace(network.IPAddress) != "" {
+			node.InternalIP = strings.TrimSpace(network.IPAddress)
+		}
+	}
+
+	if node.ExternalIP == "" && node.InternalIP == "" {
+		// If the node ExternalIP and InternalIP are empty, try to fetch the IP from the DHCP server.
+		klog.Infof("Node %s fetching IP from DHCP server", nodeName)
+
+		// Fetch the Network attached to instance.
+		network, err := getPowerVSNetwork(pvsInstance)
+		if err != nil {
+			return fmt.Errorf("failed to fetch PowerVS network attached to instance: %w", err)
+		}
+
+		// for DHCP network type will be "dynamic" for other networks type will be "fixed"
+		if network.Type != "dynamic" {
+			return fmt.Errorf("node %s attached with network %s of type %s expecting Network Type to be dynamic to fetch IP from DHCP server", nodeName, network.NetworkName, network.Type)
+		}
+
+		// Fetch DHCP IP of instance.
+		ip, err := p.sdk.GetInstanceDHCPIP(network.NetworkName, network.MacAddress, instanceDetails.Workspace)
+		if err != nil {
+			return fmt.Errorf("failed to get instance details for node %s: %w", nodeName, err)
+		}
+		node.InternalIP = ip
+	}
+
+	// Update the cache with the node metadata
+	err = dhcpCacheStore.Add(nodeMetadataCache{
+		Name:     nodeName,
+		Metadata: node,
+	})
+	if err != nil {
+		klog.Errorf("Node %s failed to add node metadata to cache: %v", nodeName, err)
+	}
+	klog.Infof("Node %s internal IP is %s", nodeName, node.InternalIP)
+	klog.Infof("Node %s external IP is %s", nodeName, node.ExternalIP)
+	return nil
+}
+
 // getStartToken parses the given url string and gets the 'start' query param.
 func getStartToken(nextURLS string) (string, error) {
 	nextURL, err := url.Parse(nextURLS)
@@ -430,4 +573,19 @@ func PagingHelper(f func(string) (bool, string, error)) error {
 		}
 	}
 	return err
+}
+
+// ConstructRegionFromZone Calculate region based on location/zone.
+func ConstructRegionFromZone(zone string) string {
+	var regex string
+	if strings.Contains(zone, "-") {
+		// it's a region or AZ
+		regex = "-[0-9]+$"
+	} else {
+		// it's a datacenter
+		regex = "[0-9]+$"
+	}
+
+	reg, _ := regexp.Compile(regex)
+	return reg.ReplaceAllString(zone, "")
 }

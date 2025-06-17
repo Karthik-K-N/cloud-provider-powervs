@@ -22,6 +22,7 @@ package ibm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -39,24 +40,26 @@ import (
 // NodeMetadata holds the provider metatdata from a node.
 // Field names reflects Kubernetes CCM terminology.
 type NodeMetadata struct {
-	InternalIP    string
-	ExternalIP    string
-	WorkerID      string
-	InstanceType  string
-	FailureDomain string
-	Region        string
-	ProviderID    string
+	InternalIP         string
+	ExternalIP         string
+	WorkerID           string
+	InstanceType       string
+	FailureDomain      string
+	Region             string
+	ProviderID         string
+	PowerVSWorkspaceID string
 }
 
 // MetadataService provides access to provider metadata stored in node labels.
 type MetadataService struct {
-	provider       Provider
-	kubeClient     kubernetes.Interface
-	vpcClient      *vpcClient
-	powerVSClient  *ibmPowerVSClient
-	nodeMap        map[string]NodeMetadata
-	nodeMapMux     sync.Mutex
-	nodeCacheStart time.Time
+	provider                    Provider
+	kubeClient                  kubernetes.Interface
+	vpcClient                   *vpcClient
+	powerVSClient               *ibmPowerVSClient
+	powerVSMultiWorkspaceClient *ibmPowerVSMultiWorkspaceClient
+	nodeMap                     map[string]NodeMetadata
+	nodeMapMux                  sync.Mutex
+	nodeCacheStart              time.Time
 }
 
 const (
@@ -216,6 +219,20 @@ func (ms *MetadataService) GetNodeMetadata(name string, applyNetworkUnavailable 
 			if err != nil {
 				klog.Errorf("Failed to populate metadata for PowerVS node %s Error: %v", name, err)
 				return node, err
+			}
+		} else if isProviderPowerVSWithMultiWorkspace(ms.provider) {
+			klog.Infof("Multiple worksapces are configured, Retrieving information for node=%s from PowerVS workspaces", name)
+
+			if ms.powerVSMultiWorkspaceClient == nil {
+				ms.powerVSMultiWorkspaceClient, err = newPowerVSMultiWorkspaceClient(&ms.provider)
+				if err != nil {
+					return node, fmt.Errorf("failed to create multiworkspace PowerVS client: %w", err)
+				}
+			}
+			// gather node information from Power VS
+			err = ms.powerVSMultiWorkspaceClient.populateNodeMetadata(name, &newNode)
+			if err != nil {
+				return node, fmt.Errorf("failed to populate metadata for PowerVS node %s Error: %w", name, err)
 			}
 		} else {
 			// labels were not set; if VPC we can try to call api for values

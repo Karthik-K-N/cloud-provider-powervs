@@ -125,6 +125,14 @@ type Provider struct {
 	PowerVSRegion string `gcfg:"powerVSRegion"`
 	// PowerVSZone is IBM Power VS service zone
 	PowerVSZone string `gcfg:"powerVSZone"`
+	// PowerVSWorkspaces is a list of IBM PowerVS workspaces where server instance can be located.
+	PowerVSWorkspaces []PowerVSWorkspace `gcfg:"powerVSWorkspaces"`
+}
+
+type PowerVSWorkspace struct {
+	Name string `gcfg:"name"`
+	Id   string `gcfg:"id"`
+	Zone string `gcfg:"zone"`
 }
 
 // CloudConfig is the ibm cloud provider config data.
